@@ -42,6 +42,13 @@ final class AppController {
         }
     }
 
+    /// Excluded apps that are launching but not yet excluded by the filter. The stage holds a
+    /// frame from before the launch meanwhile, since the app can open a window before the
+    /// filter learns about it.
+    private var launchingExcludedPIDs: Set<pid_t> = []
+    private var launchHoldDeadline = ContinuousClock.now
+    private var launchHoldTask: Task<Void, Never>?
+
     private(set) var sourceDisplayID: CGDirectDisplayID?
     private var sourceSpec: DisplayModeSpec?
 
@@ -60,7 +67,7 @@ final class AppController {
 
     func launch() {
         capture.onFrame = { [weak self] surface in
-            guard let self, !self.isFilterBehind else { return }
+            guard let self, !self.isFilterBehind, self.launchingExcludedPIDs.isEmpty else { return }
             self.present(.live(surface))
         }
         capture.onStop = { [weak self] error in self?.handleStreamStop(error) }
@@ -79,6 +86,12 @@ final class AppController {
                 MainActor.assumeIsolated { self?.refreshFilter() }
             })
         }
+        observers.append(workspace.addObserver(
+            forName: NSWorkspace.willLaunchApplicationNotification, object: nil, queue: .main
+        ) { [weak self] notification in
+            let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+            MainActor.assumeIsolated { app.map { self?.holdStageWhileLaunching($0) } }
+        })
         observers.append(NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
         ) { [weak self] _ in
@@ -312,6 +325,36 @@ final class AppController {
             displays: physical.map { ($0, Displays.uuidString(for: $0)) },
             mainID: CGMainDisplayID()
         )
+    }
+
+    /// Will-launch arrives before the app is shareable content, so a refresh can't exclude it
+    /// yet. Hold the stage and retry until the filter excludes it, it quits, or the deadline
+    /// passes; after that, did-launch and the timer refresh as usual.
+    private func holdStageWhileLaunching(_ app: NSRunningApplication) {
+        guard capture.isRunning, let bundleID = app.bundleIdentifier,
+              prefs.excludedBundleIDs.contains(bundleID)
+        else { return }
+        if launchingExcludedPIDs.isEmpty { freezeStage() }
+        launchingExcludedPIDs.insert(app.processIdentifier)
+        launchHoldDeadline = .now + .seconds(3)
+        log.info("Holding the stage while \(bundleID, privacy: .public) launches")
+        guard launchHoldTask == nil else { return }
+        launchHoldTask = Task {
+            while !launchingExcludedPIDs.isEmpty, ContinuousClock.now < launchHoldDeadline {
+                refreshFilter()
+                await filterTask?.value
+                launchingExcludedPIDs = launchingExcludedPIDs.filter {
+                    !capture.excludes($0) && NSRunningApplication(processIdentifier: $0) != nil
+                }
+                if !launchingExcludedPIDs.isEmpty { try? await Task.sleep(for: .milliseconds(50)) }
+            }
+            if !launchingExcludedPIDs.isEmpty {
+                log.error("Launching app not excluded before the deadline; resuming the stage")
+            }
+            launchingExcludedPIDs = []
+            launchHoldTask = nil
+            log.info("Stage hold released")
+        }
     }
 
     // MARK: - Display changes

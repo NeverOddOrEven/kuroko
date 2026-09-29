@@ -37,9 +37,10 @@ Other targets: `make test`, `make run` (run from `build/` without installing), `
 
 ## How it works
 
-ScreenCaptureKit captures the source display with a filter that *includes* every running app
-except the excluded ones. Apps launched later stay hidden until the next filter refresh
-(on app launch/quit, and every 5 s), so nothing leaks while the filter catches up. Frames are
+ScreenCaptureKit captures the source display minus the excluded apps. When an excluded app
+launches, viewers see a frozen frame for a fraction of a second until the filter excludes it
+(refreshed on app launch/quit, and every 5 s). Capturing the whole display, rather than a list
+of included apps, keeps macOS from replacing window buttons with its sharing indicator. Frames are
 drawn full-screen on the virtual display, and the cursor is kept off that display.
 
 ## Limits

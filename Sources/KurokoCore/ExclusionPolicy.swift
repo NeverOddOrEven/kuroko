@@ -8,9 +8,9 @@ public protocol RunningAppDescribing {
 
 /// Decides which apps are composited onto the stage.
 ///
-/// The stream filter is built from the *included* apps rather than the excluded ones, so
-/// anything launched after the filter was built stays hidden until the next refresh
-/// (fail-closed) instead of leaking a frame to viewers.
+/// The stream filter captures the whole display minus the excluded apps' processes. An excluded
+/// app launched later isn't in the filter until the next refresh, so the stage holds a frame
+/// from before its launch until the filter catches up.
 public struct ExclusionPolicy: Sendable, Equatable {
     public static let defaultExcludedBundleIDs: [String] = [
         "com.tinyspeck.slackmacgap",       // Slack
