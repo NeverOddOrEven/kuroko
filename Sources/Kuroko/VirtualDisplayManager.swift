@@ -54,6 +54,23 @@ final class VirtualDisplayManager {
         log.info("Parked virtual display at \(origin.debugDescription, privacy: .public): \(result.rawValue)")
     }
 
+    /// Takes the display out of any mirror set. macOS may mirror a physical display to it, and
+    /// that display then shows the stage and drops out of the active list, so it can't be picked
+    /// as the source.
+    func unmirror() {
+        guard let id = displayID else { return }
+        let online = Displays.onlineDisplayIDs().map { (id: $0, mirrors: CGDisplayMirrorsDisplay($0)) }
+        let mirrored = DisplayGeometry.displaysToUnmirror(virtualID: id, displays: online)
+        guard !mirrored.isEmpty else { return }
+        var config: CGDisplayConfigRef?
+        guard CGBeginDisplayConfiguration(&config) == .success else { return }
+        for display in mirrored {
+            CGConfigureDisplayMirrorOfDisplay(config, display, kCGNullDirectDisplay)
+        }
+        let result = CGCompleteDisplayConfiguration(config, .forSession)
+        log.info("Unmirrored displays \(mirrored.map(String.init).joined(separator: ", "), privacy: .public): \(result.rawValue)")
+    }
+
     func destroy() {
         display = nil
         appliedSpec = nil

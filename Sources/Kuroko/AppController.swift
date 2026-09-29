@@ -168,6 +168,7 @@ final class AppController {
             waitForPermission()
             return
         }
+        virtualDisplay.unmirror()
         let physical = physicalDisplayIDs
         let source = resolveSource(among: physical)
         guard let spec = Displays.modeSpec(for: source) else {
@@ -176,7 +177,8 @@ final class AppController {
         }
         do {
             try await virtualDisplay.ensureDisplay(matching: spec)
-            virtualDisplay.park(physicalDisplayBounds: physical.map(CGDisplayBounds))
+            virtualDisplay.unmirror()
+            virtualDisplay.park(physicalDisplayBounds: physicalDisplayIDs.map(CGDisplayBounds))
             sourceDisplayID = source
             sourceSpec = spec
             showStage()
@@ -327,8 +329,9 @@ final class AppController {
     }
 
     /// Follows the source display's resolution/scaling, handles its disconnection, and keeps
-    /// the virtual display parked and the stage window on it.
+    /// the virtual display unmirrored and parked and the stage window on it.
     private func reconcile() async {
+        virtualDisplay.unmirror()
         let physical = physicalDisplayIDs
         guard let source = sourceDisplayID, capture.isRunning else {
             showStage()

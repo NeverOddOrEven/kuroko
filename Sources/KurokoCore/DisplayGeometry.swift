@@ -58,6 +58,18 @@ public enum DisplayGeometry {
         return CGPoint(x: union.maxX, y: union.maxY)
     }
 
+    /// Displays whose mirroring must be turned off to take the virtual display out of any mirror
+    /// set: the virtual display itself if it mirrors another, and every display mirroring it.
+    /// `displays` pairs each online display with the display it mirrors (`kCGNullDirectDisplay` if none).
+    public static func displaysToUnmirror(
+        virtualID: CGDirectDisplayID,
+        displays: [(id: CGDirectDisplayID, mirrors: CGDirectDisplayID)]
+    ) -> [CGDirectDisplayID] {
+        displays
+            .filter { $0.mirrors != kCGNullDirectDisplay && ($0.id == virtualID || $0.mirrors == virtualID) }
+            .map(\.id)
+    }
+
     /// The closest point to `point` that lies inside one of `rects`. Used to warp the cursor
     /// back onto a physical display when it strays onto the virtual one.
     public static func nearestPoint(to point: CGPoint, in rects: [CGRect]) -> CGPoint? {

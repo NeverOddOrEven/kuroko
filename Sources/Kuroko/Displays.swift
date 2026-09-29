@@ -7,11 +7,22 @@ enum Displays {
     /// Active displays other than Kuroko's. Other apps' virtual displays (DeskPad and the like)
     /// count as physical: to the user they're screens like any other.
     static func physicalDisplayIDs(excluding virtualID: CGDirectDisplayID?) -> [CGDirectDisplayID] {
+        displayList(CGGetActiveDisplayList).filter { $0 != virtualID }
+    }
+
+    /// Includes displays that are mirroring another, which the active list leaves out.
+    static func onlineDisplayIDs() -> [CGDirectDisplayID] {
+        displayList(CGGetOnlineDisplayList)
+    }
+
+    private static func displayList(
+        _ get: (UInt32, UnsafeMutablePointer<CGDirectDisplayID>?, UnsafeMutablePointer<UInt32>?) -> CGError
+    ) -> [CGDirectDisplayID] {
         var count: UInt32 = 0
-        guard CGGetActiveDisplayList(0, nil, &count) == .success, count > 0 else { return [] }
+        guard get(0, nil, &count) == .success, count > 0 else { return [] }
         var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
-        guard CGGetActiveDisplayList(count, &ids, &count) == .success else { return [] }
-        return ids.prefix(Int(count)).filter { $0 != virtualID }
+        guard get(count, &ids, &count) == .success else { return [] }
+        return Array(ids.prefix(Int(count)))
     }
 
     static func uuidString(for id: CGDirectDisplayID) -> String? {

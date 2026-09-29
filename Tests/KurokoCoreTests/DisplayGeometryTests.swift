@@ -70,4 +70,19 @@ struct DisplayGeometryTests {
         let main = CGRect(x: 0, y: 0, width: 1000, height: 1000)
         #expect(DisplayGeometry.nearestPoint(to: CGPoint(x: 5, y: 5), in: [main]) == CGPoint(x: 5, y: 5))
     }
+
+    @Test func unmirrorsDisplaysMirroringTheVirtualDisplay() {
+        let displays: [(id: CGDirectDisplayID, mirrors: CGDirectDisplayID)] = [(1, 15), (2, 0), (15, 0)]
+        #expect(DisplayGeometry.displaysToUnmirror(virtualID: 15, displays: displays) == [1])
+    }
+
+    @Test func unmirrorsTheVirtualDisplayWhenItMirrorsAnother() {
+        let displays: [(id: CGDirectDisplayID, mirrors: CGDirectDisplayID)] = [(1, 0), (2, 0), (15, 2)]
+        #expect(DisplayGeometry.displaysToUnmirror(virtualID: 15, displays: displays) == [15])
+    }
+
+    @Test func leavesMirroringBetweenOtherDisplaysAlone() {
+        let displays: [(id: CGDirectDisplayID, mirrors: CGDirectDisplayID)] = [(1, 2), (2, 0), (15, 0)]
+        #expect(DisplayGeometry.displaysToUnmirror(virtualID: 15, displays: displays).isEmpty)
+    }
 }
