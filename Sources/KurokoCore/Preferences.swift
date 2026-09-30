@@ -7,6 +7,7 @@ public final class Preferences: @unchecked Sendable {
         static let excludedBundleIDs = "excludedBundleIDs"
         static let showPreview = "showPreview"
         static let frameRate = "frameRate"
+        static let captureMode = "captureMode"
     }
 
     public static let frameRateOptions = [5, 15, 30, 60]
@@ -34,6 +35,11 @@ public final class Preferences: @unchecked Sendable {
         var ids = excludedBundleIDs.filter { $0 != bundleID }
         if excluded { ids.append(bundleID) }
         excludedBundleIDs = ids
+    }
+
+    public var captureMode: CaptureMode {
+        get { defaults.string(forKey: Key.captureMode).flatMap(CaptureMode.init(rawValue:)) ?? .hideExcluded }
+        set { defaults.set(newValue.rawValue, forKey: Key.captureMode) }
     }
 
     public var showPreview: Bool {

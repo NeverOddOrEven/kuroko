@@ -24,6 +24,7 @@ final class AppController {
     private let stage = StageWindow()
     private let preview = PreviewWindow()
     private let watermark = WatermarkWindow()
+    private let revealOverlay = RevealOverlay()
     private var cursorGuard: CursorGuard?
     private var shareWatcher: TeamsShareWatcher?
     private var hotKey: HotKey?
@@ -68,8 +69,19 @@ final class AppController {
         didSet { if state != oldValue { onStateChange() } }
     }
 
+    /// Apps shown in `.showRevealed` mode. Forgotten whenever the display turns off, so every
+    /// session starts with nothing revealed.
+    private(set) var revealedBundleIDs: Set<String> = []
+    /// Hidden apps whose overlay lets input through. Forgotten with the revealed apps.
+    private var dismissedBundleIDs: Set<String> = []
+
     var policy: ExclusionPolicy {
-        ExclusionPolicy(excludedBundleIDs: prefs.excludedBundleIDs, selfProcessID: ProcessInfo.processInfo.processIdentifier)
+        ExclusionPolicy(
+            mode: prefs.captureMode,
+            excludedBundleIDs: prefs.excludedBundleIDs,
+            revealedBundleIDs: revealedBundleIDs,
+            selfProcessID: ProcessInfo.processInfo.processIdentifier
+        )
     }
 
     var physicalDisplayIDs: [CGDirectDisplayID] {
@@ -94,6 +106,8 @@ final class AppController {
         })
         shareWatcher?.onShareEnded = { [weak self] in self?.setDisplayOn(false) }
         shareWatcher?.start()
+        revealOverlay.onReveal = { [weak self] id in self?.setRevealed(id, true) }
+        revealOverlay.onDismiss = { [weak self] id in self?.dismissedBundleIDs.insert(id) }
         hotKey = HotKey { [weak self] in self?.togglePause() }
         shareHotKey = HotKey(keyCode: kVK_ANSI_S) { [weak self] in self?.toggleSharingInTeams() }
 
@@ -130,6 +144,7 @@ final class AppController {
         permissionWatcher.cancel()
         cursorGuard?.stop()
         shareWatcher?.stop()
+        revealOverlay.stop()
         stage.close()
         watermark.hide()
         virtualDisplay.destroy()
@@ -173,6 +188,26 @@ final class AppController {
 
     func setExcluded(_ bundleID: String, _ excluded: Bool) {
         prefs.setExcluded(bundleID, excluded)
+        policyDidChange()
+    }
+
+    func setCaptureMode(_ mode: CaptureMode) {
+        guard mode != prefs.captureMode else { return }
+        prefs.captureMode = mode
+        log.info("Capture mode set to \(mode.rawValue, privacy: .public)")
+        policyDidChange()
+        updateRevealOverlay()
+    }
+
+    func setRevealed(_ bundleID: String, _ revealed: Bool) {
+        if revealed { revealedBundleIDs.insert(bundleID) } else { revealedBundleIDs.remove(bundleID) }
+        policyDidChange()
+    }
+
+    /// Blanks the stage right away when the running filter may show something the new policy
+    /// hides, rather than leaving it visible while the refresh runs.
+    private func policyDidChange() {
+        if capture.mayShowApps(excludedBy: policy) { isFilterBehind = true }
         refreshFilter()
     }
 
@@ -207,7 +242,10 @@ final class AppController {
                 stage.close()
                 preview.hide()
                 watermark.hide()
+                revealOverlay.stop()
                 virtualDisplay.destroy()
+                revealedBundleIDs = []
+                dismissedBundleIDs = []
                 sourceDisplayID = nil
                 sourceSpec = nil
             }
@@ -410,7 +448,9 @@ final class AppController {
     /// yet. Hold the stage and retry until the filter excludes it, it quits, or the deadline
     /// passes; after that, did-launch and the timer refresh as usual.
     private func holdStageWhileLaunching(_ app: NSRunningApplication) {
-        guard capture.isRunning, let bundleID = app.bundleIdentifier,
+        // In .showRevealed mode a launching app is already hidden, since the filter only
+        // includes apps that were running when it was built.
+        guard capture.isRunning, prefs.captureMode == .hideExcluded, let bundleID = app.bundleIdentifier,
               prefs.excludedBundleIDs.contains(bundleID)
         else { return }
         if launchingExcludedPIDs.isEmpty { freezeStage() }
@@ -514,6 +554,24 @@ final class AppController {
         stage.show(on: virtualDisplay.displayID.flatMap(Displays.screen(for:)))
         let source = virtualDisplay.displayID == nil ? nil : sourceDisplayID
         watermark.show(on: source.flatMap(Displays.screen(for:)))
+        updateRevealOverlay()
+    }
+
+    /// Runs the overlay while the display is on in `.showRevealed` mode.
+    private func updateRevealOverlay() {
+        guard virtualDisplay.displayID != nil, prefs.captureMode == .showRevealed else {
+            revealOverlay.stop()
+            return
+        }
+        revealOverlay.start { [weak self] in
+            guard let self, let source = sourceDisplayID, virtualDisplay.displayID != nil else { return nil }
+            let policy = policy
+            return RevealOverlay.State(
+                displayID: source,
+                isHidden: { id in policy.hides(bundleID: id) },
+                dismissed: dismissedBundleIDs
+            )
+        }
     }
 
     private func showPreview() {

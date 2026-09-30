@@ -34,8 +34,16 @@ Other targets: `make test`, `make run` (run from `build/` without installing), `
 - **Share in Teams** (⌃⌥⌘S from anywhere): turns the Kuroko display on and shares it in the
   current Teams meeting by pressing Teams' Share button and the Kuroko screen for you. Needs
   Accessibility permission (macOS asks the first time).
+- **Show Only Revealed Apps**: fail-closed mode. Viewers see only the desktop wallpaper and
+  the apps you reveal, so anything you haven't revealed, including apps launched later, never
+  reaches them. Hidden apps' windows are tinted grey on the source display, with **Reveal**
+  (share the app) and **Dismiss** (keep it hidden, lighten the tint and let clicks through)
+  buttons. Reveals and dismissals are forgotten whenever the Kuroko display turns off. When off,
+  Kuroko shares everything except the excluded apps.
 - **Source Display**: which physical display to mirror.
-- **Excluded Apps**: toggle entries; *Add Running App* excludes anything else.
+- **Excluded Apps**: toggle entries; *Add Running App* excludes anything else. Replaced by
+  **Revealed Apps**, which toggles which running apps viewers can see, while Show Only Revealed
+  Apps is on.
 - **Frame Rate**: 5, 15, 30 (default) or 60 fps. Lower saves battery; Teams rarely sends
   more than 30.
 - **Show Preview**: floating window showing exactly what viewers see.

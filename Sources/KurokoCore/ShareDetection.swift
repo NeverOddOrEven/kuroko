@@ -2,11 +2,13 @@ import CoreGraphics
 
 /// An on-screen window, as reported by the window server.
 public struct WindowSnapshot: Sendable, Equatable {
+    public var windowID: CGWindowID
     public var ownerPID: pid_t
     public var bounds: CGRect
     public var layer: Int
 
-    public init(ownerPID: pid_t, bounds: CGRect, layer: Int) {
+    public init(windowID: CGWindowID = 0, ownerPID: pid_t, bounds: CGRect, layer: Int) {
+        self.windowID = windowID
         self.ownerPID = ownerPID
         self.bounds = bounds
         self.layer = layer

@@ -55,4 +55,45 @@ struct ExclusionPolicyTests {
             "com.microsoft.teams2",
         ]))
     }
+
+    // MARK: - Show revealed
+
+    let wallpaper = App(bundleIdentifier: "com.apple.wallpaper.agent", processID: 12)
+
+    func revealing(_ ids: [String]) -> ExclusionPolicy {
+        ExclusionPolicy(mode: .showRevealed, excludedBundleIDs: [], revealedBundleIDs: ids, selfProcessID: 99)
+    }
+
+    @Test func showRevealedIncludesOnlyTheDesktopAndRevealedApps() {
+        #expect(revealing([]).included(from: [slack, safari, wallpaper, me]) == [wallpaper])
+        #expect(revealing(["com.apple.Safari"]).included(from: [slack, safari, wallpaper, me]) == [safari, wallpaper])
+    }
+
+    @Test func showRevealedIgnoresTheExclusionList() {
+        let policy = ExclusionPolicy(mode: .showRevealed, excludedBundleIDs: ["com.apple.Safari"], revealedBundleIDs: ["com.apple.Safari"], selfProcessID: 99)
+        #expect(policy.included(from: [safari]) == [safari])
+    }
+
+    @Test func showRevealedNeverIncludesSelf() {
+        let policy = ExclusionPolicy(mode: .showRevealed, excludedBundleIDs: [], revealedBundleIDs: ["com.neveroddoreven.kuroko"], selfProcessID: 99)
+        #expect(policy.included(from: [me]).isEmpty)
+    }
+
+    @Test func hidingARevealedAppExcludesMore() {
+        let before = revealing(["com.apple.Safari", "com.tinyspeck.slackmacgap"])
+        let after = revealing(["com.apple.Safari"])
+        #expect(after.excludesMore(than: before))
+        #expect(!before.excludesMore(than: after))
+    }
+
+    @Test func switchingToShowRevealedExcludesMore() {
+        let hideExcluded = ExclusionPolicy(excludedBundleIDs: ["com.tinyspeck.slackmacgap"], selfProcessID: 99)
+        #expect(revealing(["com.apple.Safari"]).excludesMore(than: hideExcluded))
+    }
+
+    @Test func switchingToHideExcludedExcludesMoreOnlyIfARevealedAppIsExcluded() {
+        let hideExcluded = ExclusionPolicy(excludedBundleIDs: ["com.tinyspeck.slackmacgap"], selfProcessID: 99)
+        #expect(!hideExcluded.excludesMore(than: revealing(["com.apple.Safari"])))
+        #expect(hideExcluded.excludesMore(than: revealing(["com.tinyspeck.slackmacgap"])))
+    }
 }

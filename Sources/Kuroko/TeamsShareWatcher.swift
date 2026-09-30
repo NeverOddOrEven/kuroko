@@ -32,11 +32,12 @@ final class TeamsShareWatcher {
     }
 
     private func check() {
-        let teams = Set(NSWorkspace.shared.runningApplications
-            .filter { $0.bundleIdentifier.map(Self.teamsBundleIDs.contains) ?? false }
+        // Asking by bundle ID avoids fetching every running app's bundle ID twice a second.
+        let teams = Set(Self.teamsBundleIDs
+            .flatMap(NSRunningApplication.runningApplications(withBundleIdentifier:))
             .map(\.processIdentifier))
         let sharing = if let bounds = displayBounds(), !teams.isEmpty {
-            ShareDetection.isSharing(display: bounds, windows: Self.onScreenWindows(), sharerPIDs: teams)
+            ShareDetection.isSharing(display: bounds, windows: WindowList.onScreen(), sharerPIDs: teams)
         } else {
             false
         }
@@ -46,18 +47,6 @@ final class TeamsShareWatcher {
         }
         if detector.update(isSharing: sharing, now: ProcessInfo.processInfo.systemUptime) {
             onShareEnded()
-        }
-    }
-
-    private static func onScreenWindows() -> [WindowSnapshot] {
-        let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
-        return info.compactMap { window in
-            guard let pid = window[kCGWindowOwnerPID as String] as? pid_t,
-                  let layer = window[kCGWindowLayer as String] as? Int,
-                  let boundsInfo = window[kCGWindowBounds as String] as? NSDictionary,
-                  let bounds = CGRect(dictionaryRepresentation: boundsInfo)
-            else { return nil }
-            return WindowSnapshot(ownerPID: pid, bounds: bounds, layer: layer)
         }
     }
 }

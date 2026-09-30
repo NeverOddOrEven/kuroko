@@ -70,4 +70,16 @@ final class PreferencesTests {
         prefs.excludedBundleIDs = []
         #expect(prefs.excludedBundleIDs.isEmpty)
     }
+
+    @Test func captureModeDefaultsToHideExcludedAndPersists() {
+        let prefs = Preferences(defaults: defaults)
+        #expect(prefs.captureMode == .hideExcluded)
+        prefs.captureMode = .showRevealed
+        #expect(Preferences(defaults: defaults).captureMode == .showRevealed)
+    }
+
+    @Test func unknownCaptureModeFallsBackToHideExcluded() {
+        defaults.set("bogus", forKey: "captureMode")
+        #expect(Preferences(defaults: defaults).captureMode == .hideExcluded)
+    }
 }

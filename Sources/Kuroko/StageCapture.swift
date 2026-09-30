@@ -25,7 +25,10 @@ final class StageCapture: NSObject {
         let displayID: CGDirectDisplayID
         var spec: DisplayModeSpec
         var frameRate: Int
-        var excludedPIDs: Set<pid_t>
+        /// The processes the current filter lists, and whether it lists them to exclude or to
+        /// include; the filter is rebuilt when either changes.
+        var filterMode: CaptureMode
+        var filterPIDs: Set<pid_t>
         /// The policy the current filter was built from.
         var policy: ExclusionPolicy
         var isPaused = false
@@ -48,8 +51,7 @@ final class StageCapture: NSObject {
         guard let display = content.displays.first(where: { $0.displayID == sourceDisplayID }) else {
             throw KurokoError.capture("source display \(sourceDisplayID) not shareable")
         }
-        let excluded = content.applications.filter(policy.isExcluded)
-        let filter = SCContentFilter(display: display, excludingApplications: excluded, exceptingWindows: [])
+        let (filter, listed) = Self.filter(on: display, apps: content.applications, policy: policy)
 
         let output = FrameOutput { [weak self] surface in
             MainActor.assumeIsolated { self?.deliver(surface.surface, generation: token) }
@@ -70,27 +72,29 @@ final class StageCapture: NSObject {
             displayID: sourceDisplayID,
             spec: spec,
             frameRate: frameRate,
-            excludedPIDs: Set(excluded.map(\.processID)),
+            filterMode: policy.mode,
+            filterPIDs: Set(listed.map(\.processID)),
             policy: policy
         )
-        log.info("Capture started on display \(sourceDisplayID, privacy: .public), \(excluded.count, privacy: .public) apps excluded")
+        log.info("Capture started on display \(sourceDisplayID, privacy: .public), \(Self.describe(listed, policy.mode), privacy: .public)")
     }
 
-    /// Re-snapshots running apps and swaps the filter if the excluded set changed.
+    /// Re-snapshots running apps and swaps the filter if the mode or the listed apps changed.
     func refreshFilter(policy: ExclusionPolicy) async throws {
         guard let session else { return }
         do {
             let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
             guard let display = content.displays.first(where: { $0.displayID == session.displayID }) else { return }
-            let excluded = content.applications.filter(policy.isExcluded)
-            let pids = Set(excluded.map(\.processID))
-            if pids != session.excludedPIDs {
-                try await session.stream.updateContentFilter(SCContentFilter(display: display, excludingApplications: excluded, exceptingWindows: []))
-                log.info("Filter refreshed, \(excluded.count, privacy: .public) apps excluded")
+            let (filter, listed) = Self.filter(on: display, apps: content.applications, policy: policy)
+            let pids = Set(listed.map(\.processID))
+            if policy.mode != session.filterMode || pids != session.filterPIDs {
+                try await session.stream.updateContentFilter(filter)
+                log.info("Filter refreshed, \(Self.describe(listed, policy.mode), privacy: .public)")
             }
             guard self.session?.stream === session.stream else { return }
-            self.session?.excludedPIDs = pids
-            // Record the policy even when the filter didn't change: the same excluded apps
+            self.session?.filterMode = policy.mode
+            self.session?.filterPIDs = pids
+            // Record the policy even when the filter didn't change: the same listed apps
             // means the filter already complies with it.
             self.session?.policy = policy
         } catch where self.session?.stream !== session.stream {
@@ -99,7 +103,8 @@ final class StageCapture: NSObject {
     }
 
     func excludes(_ pid: pid_t) -> Bool {
-        session?.excludedPIDs.contains(pid) ?? false
+        guard let session else { return false }
+        return session.filterMode == .hideExcluded ? session.filterPIDs.contains(pid) : !session.filterPIDs.contains(pid)
     }
 
     /// Whether the running filter may still show an app that `policy` excludes.
@@ -142,6 +147,25 @@ final class StageCapture: NSObject {
         guard let lastSurface else { return nil }
         let image = CIImage(ioSurface: lastSurface)
         return CIContext().createCGImage(image, from: image.extent)
+    }
+
+    /// `listed` is the apps the filter names: excluded ones in `.hideExcluded` mode, included
+    /// ones in `.showRevealed` mode.
+    private static func filter(
+        on display: SCDisplay, apps: [SCRunningApplication], policy: ExclusionPolicy
+    ) -> (filter: SCContentFilter, listed: [SCRunningApplication]) {
+        switch policy.mode {
+        case .hideExcluded:
+            let excluded = apps.filter(policy.isExcluded)
+            return (SCContentFilter(display: display, excludingApplications: excluded, exceptingWindows: []), excluded)
+        case .showRevealed:
+            let included = policy.included(from: apps)
+            return (SCContentFilter(display: display, including: included, exceptingWindows: []), included)
+        }
+    }
+
+    private static func describe(_ listed: [SCRunningApplication], _ mode: CaptureMode) -> String {
+        "\(listed.count) apps \(mode == .hideExcluded ? "excluded" : "included")"
     }
 
     private func reconfigure(_ session: Session, spec: DisplayModeSpec, frameRate: Int) async throws {

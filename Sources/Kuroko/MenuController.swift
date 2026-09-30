@@ -64,10 +64,18 @@ final class MenuController: NSObject, NSMenuDelegate {
         share.keyEquivalent = "s"
         share.keyEquivalentModifierMask = [.control, .option, .command]
         menu.addItem(share)
+        let revealedOnly = item("Show Only Revealed Apps") { [controller] in
+            controller.setCaptureMode(controller.prefs.captureMode == .showRevealed ? .hideExcluded : .showRevealed)
+        }
+        revealedOnly.state = controller.prefs.captureMode == .showRevealed ? .on : .off
+        menu.addItem(revealedOnly)
         menu.addItem(.separator())
 
         menu.addItem(submenu("Source Display", items: sourceItems()))
-        menu.addItem(submenu("Excluded Apps", items: exclusionItems()))
+        switch controller.prefs.captureMode {
+        case .hideExcluded: menu.addItem(submenu("Excluded Apps", items: exclusionItems()))
+        case .showRevealed: menu.addItem(submenu("Revealed Apps", items: revealItems()))
+        }
         menu.addItem(submenu("Frame Rate", items: frameRateItems()))
 
         let preview = item("Show Preview") { [controller] in controller.setPreviewVisible(!controller.prefs.showPreview) }
@@ -87,7 +95,11 @@ final class MenuController: NSObject, NSMenuDelegate {
     private var statusText: String {
         switch controller.state {
         case .starting: "Starting…"
-        case .live: "Live — sharing \(sourceName) minus excluded apps"
+        case .live:
+            switch controller.prefs.captureMode {
+            case .hideExcluded: "Live — sharing \(sourceName) minus excluded apps"
+            case .showRevealed: "Live — sharing only revealed apps from \(sourceName)"
+            }
         case .paused: "Paused — viewers see a frozen frame"
         case .stopped: "Stopped from the macOS menu bar — viewers see a frozen frame"
         case .needsPermission: "Needs Screen Recording permission"
@@ -104,6 +116,22 @@ final class MenuController: NSObject, NSMenuDelegate {
         controller.physicalDisplayIDs.map { id in
             let entry = item(Displays.name(for: id)) { [controller] in controller.selectSource(id) }
             entry.state = id == controller.sourceDisplayID ? .on : .off
+            return entry
+        }
+    }
+
+    private func revealItems() -> [NSMenuItem] {
+        let revealed = controller.revealedBundleIDs
+        let apps = NSWorkspace.shared.runningApplications
+            .filter { $0.activationPolicy == .regular && $0.bundleIdentifier != Bundle.main.bundleIdentifier }
+            .compactMap { app in app.bundleIdentifier.map { (id: $0, name: app.localizedName ?? $0) } }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        guard !apps.isEmpty else { return [disabled("No apps running")] }
+        return apps.map { app in
+            let isRevealed = revealed.contains(app.id)
+            let entry = item(app.name) { [controller] in controller.setRevealed(app.id, !isRevealed) }
+            entry.state = isRevealed ? .on : .off
+            entry.toolTip = app.id
             return entry
         }
     }
