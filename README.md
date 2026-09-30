@@ -31,12 +31,18 @@ Other targets: `make test`, `make run` (run from `build/` without installing), `
 - **Turn Off / Turn On Kuroko Display**: removes the virtual display (ending any share of it)
   and stops capturing until you turn it back on. Kuroko always starts with it on, and turns it
   off by itself when Teams stops sharing it.
+- **Share in Teams** (⌃⌥⌘S from anywhere): turns the Kuroko display on and shares it in the
+  current Teams meeting by pressing Teams' Share button and the Kuroko screen for you. Needs
+  Accessibility permission (macOS asks the first time).
 - **Source Display**: which physical display to mirror.
 - **Excluded Apps**: toggle entries; *Add Running App* excludes anything else.
 - **Frame Rate**: 5, 15, 30 (default) or 60 fps. Lower saves battery; Teams rarely sends
   more than 30.
 - **Show Preview**: floating window showing exactly what viewers see.
 - **Launch at Login** (works best when installed in `~/Applications`).
+
+While the Kuroko display is on, a faint Kuroko watermark sits in the middle of the source
+display. It ignores clicks and keys, and viewers never see it.
 
 ## How it works
 

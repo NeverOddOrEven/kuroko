@@ -1,4 +1,5 @@
 import AppKit
+import Carbon.HIToolbox
 import KurokoCore
 import ScreenCaptureKit
 
@@ -22,9 +23,11 @@ final class AppController {
     private let capture = StageCapture()
     private let stage = StageWindow()
     private let preview = PreviewWindow()
+    private let watermark = WatermarkWindow()
     private var cursorGuard: CursorGuard?
     private var shareWatcher: TeamsShareWatcher?
     private var hotKey: HotKey?
+    private var shareHotKey: HotKey?
     private var observers: [NSObjectProtocol] = []
     private var filterTimer: Timer?
     private var restartTask: Task<Void, Never>?
@@ -92,6 +95,7 @@ final class AppController {
         shareWatcher?.onShareEnded = { [weak self] in self?.setDisplayOn(false) }
         shareWatcher?.start()
         hotKey = HotKey { [weak self] in self?.togglePause() }
+        shareHotKey = HotKey(keyCode: kVK_ANSI_S) { [weak self] in self?.toggleSharingInTeams() }
 
         let workspace = NSWorkspace.shared.notificationCenter
         for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification] {
@@ -127,6 +131,7 @@ final class AppController {
         cursorGuard?.stop()
         shareWatcher?.stop()
         stage.close()
+        watermark.hide()
         virtualDisplay.destroy()
     }
 
@@ -201,10 +206,39 @@ final class AppController {
                 await capture.stop()
                 stage.close()
                 preview.hide()
+                watermark.hide()
                 virtualDisplay.destroy()
                 sourceDisplayID = nil
                 sourceSpec = nil
             }
+        }
+    }
+
+    var isSharingInTeams: Bool { shareWatcher?.isSharing ?? false }
+
+    func toggleSharingInTeams() {
+        if isSharingInTeams { stopSharingInTeams() } else { shareInTeams() }
+    }
+
+    func stopSharingInTeams() {
+        let outcome = TeamsShareLauncher.stopSharing()
+        log.info("Stop sharing in Teams: \(String(describing: outcome), privacy: .public)")
+        if outcome != .stopped { NSSound.beep() }
+    }
+
+    /// Turns the display on if needed, then shares it in the current Teams meeting.
+    func shareInTeams() {
+        setDisplayOn(true)
+        Task {
+            await powerTask?.value
+            guard isDisplayOn, virtualDisplay.displayID != nil else {
+                log.error("Can't share in Teams: the Kuroko display isn't running")
+                NSSound.beep()
+                return
+            }
+            let outcome = await TeamsShareLauncher.share(displayNamed: VirtualDisplayManager.displayName)
+            log.info("Share in Teams: \(String(describing: outcome), privacy: .public)")
+            if outcome != .shared { NSSound.beep() }
         }
     }
 
@@ -478,6 +512,8 @@ final class AppController {
 
     private func showStage() {
         stage.show(on: virtualDisplay.displayID.flatMap(Displays.screen(for:)))
+        let source = virtualDisplay.displayID == nil ? nil : sourceDisplayID
+        watermark.show(on: source.flatMap(Displays.screen(for:)))
     }
 
     private func showPreview() {

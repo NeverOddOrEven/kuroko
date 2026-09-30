@@ -11,7 +11,7 @@ final class TeamsShareWatcher {
     private let displayBounds: () -> CGRect?
     private var timer: Timer?
     private var detector = ShareEndDetector()
-    private var isSharing = false
+    private(set) var isSharing = false
 
     init(displayBounds: @escaping () -> CGRect?) {
         self.displayBounds = displayBounds

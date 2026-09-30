@@ -59,6 +59,11 @@ final class MenuController: NSObject, NSMenuDelegate {
             controller.setDisplayOn(!controller.isDisplayOn)
         }
         menu.addItem(power)
+        let shareTitle = controller.isSharingInTeams ? "Stop Sharing in Teams" : "Share in Teams"
+        let share = item(shareTitle) { [controller] in controller.toggleSharingInTeams() }
+        share.keyEquivalent = "s"
+        share.keyEquivalentModifierMask = [.control, .option, .command]
+        menu.addItem(share)
         menu.addItem(.separator())
 
         menu.addItem(submenu("Source Display", items: sourceItems()))
