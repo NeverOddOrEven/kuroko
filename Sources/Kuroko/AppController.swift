@@ -23,6 +23,7 @@ final class AppController {
     private let stage = StageWindow()
     private let preview = PreviewWindow()
     private var cursorGuard: CursorGuard?
+    private var shareWatcher: TeamsShareWatcher?
     private var hotKey: HotKey?
     private var observers: [NSObjectProtocol] = []
     private var filterTimer: Timer?
@@ -85,6 +86,11 @@ final class AppController {
             physicalBounds: { [weak self] in self?.physicalDisplayIDs.map(CGDisplayBounds) ?? [] }
         )
         cursorGuard?.start()
+        shareWatcher = TeamsShareWatcher(displayBounds: { [weak self] in
+            self?.virtualDisplay.displayID.map(CGDisplayBounds)
+        })
+        shareWatcher?.onShareEnded = { [weak self] in self?.setDisplayOn(false) }
+        shareWatcher?.start()
         hotKey = HotKey { [weak self] in self?.togglePause() }
 
         let workspace = NSWorkspace.shared.notificationCenter
@@ -119,6 +125,7 @@ final class AppController {
         filterTimer?.invalidate()
         permissionWatcher.cancel()
         cursorGuard?.stop()
+        shareWatcher?.stop()
         stage.close()
         virtualDisplay.destroy()
     }
