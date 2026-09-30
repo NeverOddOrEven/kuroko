@@ -31,6 +31,7 @@ final class MenuController: NSObject, NSMenuDelegate {
         case .stopped: "stop.circle"
         case .starting: "hourglass"
         case .needsPermission, .failed: "exclamationmark.triangle"
+        case .off: "rectangle.dashed"
         }
         let image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Kuroko")
         image?.isTemplate = true
@@ -54,6 +55,10 @@ final class MenuController: NSObject, NSMenuDelegate {
         pause.keyEquivalentModifierMask = [.control, .option, .command]
         pause.isEnabled = controller.state == .live || isHalted
         menu.addItem(pause)
+        let power = item(controller.isDisplayOn ? "Turn Off Kuroko Display" : "Turn On Kuroko Display") { [controller] in
+            controller.setDisplayOn(!controller.isDisplayOn)
+        }
+        menu.addItem(power)
         menu.addItem(.separator())
 
         menu.addItem(submenu("Source Display", items: sourceItems()))
@@ -82,6 +87,7 @@ final class MenuController: NSObject, NSMenuDelegate {
         case .stopped: "Stopped from the macOS menu bar — viewers see a frozen frame"
         case .needsPermission: "Needs Screen Recording permission"
         case .failed(let message): "Error: \(message)"
+        case .off: "Off — the Kuroko display is removed"
         }
     }
 

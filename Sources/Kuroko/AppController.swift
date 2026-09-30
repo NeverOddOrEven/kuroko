@@ -10,6 +10,8 @@ enum StageState: Equatable {
     case stopped
     case needsPermission
     case failed(String)
+    /// The user turned the Kuroko display off; nothing runs until it's turned back on.
+    case off
 }
 
 /// Wires the virtual display, capture, windows and system hooks together.
@@ -29,6 +31,7 @@ final class AppController {
     private let permissionWatcher = PermissionWatcher()
     private var reconcileTask: Task<Void, Never>?
     private var toggleTask: Task<Void, Never>?
+    private var powerTask: Task<Void, Never>?
     private var filterTask: Task<Void, Never>?
     private var isFilterRefreshQueued = false
 
@@ -48,6 +51,10 @@ final class AppController {
     private var launchingExcludedPIDs: Set<pid_t> = []
     private var launchHoldDeadline = ContinuousClock.now
     private var launchHoldTask: Task<Void, Never>?
+
+    /// Starts check this after every suspension, since only the capture itself is cancelled
+    /// by turning the display off.
+    private(set) var isDisplayOn = true
 
     private(set) var sourceDisplayID: CGDirectDisplayID?
     private var sourceSpec: DisplayModeSpec?
@@ -169,6 +176,31 @@ final class AppController {
         }
     }
 
+    func setDisplayOn(_ on: Bool) {
+        guard on != isDisplayOn else { return }
+        isDisplayOn = on
+        // Each toggle acts on what the previous one left behind.
+        let previous = powerTask
+        powerTask = Task {
+            await previous?.value
+            if on {
+                log.info("Turning the Kuroko display on")
+                state = .starting
+                retry.reset()
+                await startStage()
+            } else {
+                log.info("Turning the Kuroko display off")
+                state = .off
+                await capture.stop()
+                stage.close()
+                preview.hide()
+                virtualDisplay.destroy()
+                sourceDisplayID = nil
+                sourceSpec = nil
+            }
+        }
+    }
+
     func setPreviewVisible(_ visible: Bool) {
         prefs.showPreview = visible
         if visible { showPreview() } else { preview.hide() }
@@ -177,6 +209,7 @@ final class AppController {
     // MARK: - Lifecycle
 
     private func startStage() async {
+        guard isDisplayOn else { return }
         guard Permissions.hasScreenRecording else {
             waitForPermission()
             return
@@ -190,6 +223,10 @@ final class AppController {
         }
         do {
             try await virtualDisplay.ensureDisplay(matching: spec)
+            guard isDisplayOn else {
+                virtualDisplay.destroy()
+                return
+            }
             virtualDisplay.unmirror()
             virtualDisplay.park(physicalDisplayBounds: physicalDisplayIDs.map(CGDisplayBounds))
             sourceDisplayID = source
@@ -210,6 +247,7 @@ final class AppController {
     /// Restarts only the capture when the virtual display is still valid, so a stream hiccup
     /// never reconfigures the display that Teams is sharing or listing.
     private func recoverCapture() async {
+        guard isDisplayOn else { return }
         guard Permissions.hasScreenRecording else {
             waitForPermission()
             return

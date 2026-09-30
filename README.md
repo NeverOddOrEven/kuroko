@@ -28,6 +28,8 @@ Other targets: `make test`, `make run` (run from `build/` without installing), `
 - Because Kuroko records the screen continuously, it's always listed in the macOS
   screen-recording menu bar item. Clicking **Stop Sharing** there stops Kuroko's capture
   (not Teams'); viewers see a frozen frame until you choose **Resume** or press ⌃⌥⌘P.
+- **Turn Off / Turn On Kuroko Display**: removes the virtual display (ending any share of it)
+  and stops capturing until you turn it back on. Kuroko always starts with it on.
 - **Source Display**: which physical display to mirror.
 - **Excluded Apps**: toggle entries; *Add Running App* excludes anything else.
 - **Frame Rate**: 5, 15, 30 (default) or 60 fps. Lower saves battery; Teams rarely sends
