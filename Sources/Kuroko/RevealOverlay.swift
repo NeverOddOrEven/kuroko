@@ -16,8 +16,8 @@ final class RevealOverlay {
     private enum CoverReason {
         /// Kuroko is raising this window, or a click is about to.
         case raise(CGWindowID)
-        /// An app switch is about to happen, to an app that isn't known yet.
-        case appSwitch(since: ContinuousClock.Instant)
+        /// An app switch is about to happen, to `target` if it's known.
+        case appSwitch(since: ContinuousClock.Instant, target: pid_t?)
     }
 
     var onReveal: (String) -> Void = { _ in }
@@ -67,7 +67,7 @@ final class RevealOverlay {
             let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
             MainActor.assumeIsolated { app.map { self?.bundleIDs[$0.processIdentifier] = nil } }
         }
-        input.onAppSwitch = { [weak self] in self?.beginCover(.appSwitch(since: .now)) }
+        input.onAppSwitch = { [weak self] app in self?.coverForAppSwitch(to: app) }
         input.onMouseDown = { [weak self] point in self?.coverBeforeClick(at: point) }
         input.start()
         update()
@@ -113,6 +113,7 @@ final class RevealOverlay {
             tints[id] = nil
         }
         let stacking = windows.map(\.windowID)
+        var reordered = false
         for target in targets {
             let tint = tints[target.windowID] ?? makeTint(for: target)
             tints[target.windowID] = tint
@@ -121,7 +122,15 @@ final class RevealOverlay {
             // hidden app being brought forward: reordering interrupts other windows' drags.
             if !Self.isDirectlyAbove(tint.windowID, target.windowID, in: stacking) {
                 tint.order(above: target)
+                reordered = true
             }
+        }
+        // Window changes otherwise reach the window server only at the end of this run-loop
+        // turn, and the cover's in-place check below would miss them until the next tick.
+        if reordered { CATransaction.flush() }
+        if cover != nil, let screen = Displays.screen(for: state.displayID) {
+            refreshCover(windows: windows, state: state, screen: screen)
+            coverPanel.commitContent()
         }
         endCoverIfSettled(windows: windows, targets: targets)
     }
@@ -132,6 +141,8 @@ final class RevealOverlay {
             reveal: { [weak self] in self?.onReveal(target.appID) },
             dismiss: { [weak self] in self?.onDismiss(target.appID) }
         )
+        // Under a cover, the cover draws this window's tint.
+        tint.isTransparent = cover != nil
         tint.onClick = { [weak self, weak tint] in
             guard let self, let target = tint?.target else { return }
             beginCover(.raise(target.windowID))
@@ -161,7 +172,9 @@ final class RevealOverlay {
         let windows = WindowList.onScreen().filter { $0.ownerPID != ownPID }
         guard let clicked = windows.first(where: { $0.bounds.contains(point) }) else { return }
         if NSRunningApplication(processIdentifier: clicked.ownerPID)?.bundleIdentifier == "com.apple.dock" {
-            beginCover(.appSwitch(since: .now))
+            // A Dock icon that isn't a running app launches one, whose windows are new and
+            // get tints as they appear; there's nothing on screen to cover.
+            if let app = AppSwitcher.dockApp(at: point) { coverForAppSwitch(to: app) }
             return
         }
         let front = windows.first { $0.layer == clicked.layer }
@@ -171,34 +184,87 @@ final class RevealOverlay {
 
     // MARK: - Cover
 
+    /// Covers only when a hidden app is coming forward: a revealed app, or one with no tinted
+    /// windows, moves nothing that's tinted. An unknown target (the switcher couldn't be read)
+    /// could be any hidden app.
+    private func coverForAppSwitch(to app: NSRunningApplication?) {
+        if let app {
+            guard tints.values.contains(where: { $0.target?.ownerPID == app.processIdentifier }) else { return }
+        }
+        beginCover(.appSwitch(since: .now, target: app?.processIdentifier))
+    }
+
     /// Raised windows jump above their tints, which can only be reordered afterwards. So before
     /// anything raises a hidden window, one panel above all normal windows takes over from the
-    /// tints, which go transparent until each is back on top of its window.
+    /// tints, which go transparent until each is back on top of its window. The panel paints
+    /// the tints as they will look once the windows have moved, so taking it down changes
+    /// nothing on screen.
     private func beginCover(_ reason: CoverReason) {
-        guard let displayID, let screen = Displays.screen(for: displayID), !tints.isEmpty else { return }
-        let ownPID = ProcessInfo.processInfo.processIdentifier
-        let origin = CGDisplayBounds(displayID).origin
-        let normal = WindowList.onScreen().filter {
-            OverlayLayout.coveredLayers.contains($0.layer) && $0.ownerPID != ownPID
+        guard let state = state(), let screen = Displays.screen(for: state.displayID), !tints.isEmpty else { return }
+        cover = (reason, .now + .seconds(1))
+        refreshCover(windows: WindowList.onScreen(), state: state, screen: screen)
+        coverPanel.commitContent()
+        // Called from the event tap, so this must reach the screen before the event is released.
+        Self.atomically {
+            coverPanel.orderFront()
+            tints.values.forEach { $0.isTransparent = true }
         }
+    }
+
+    /// Paints the tints for the predicted stacking: the windows about to come forward moved in
+    /// front of the rest of their layer.
+    private func refreshCover(windows: [WindowSnapshot], state: State, screen: NSScreen) {
+        guard let cover else { return }
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        let rank = risingRank(cover.reason, state: state)
+        let predicted = windows.filter { $0.ownerPID != ownPID }.enumerated()
+            .sorted { a, b in
+                (-a.element.layer, rank(a.element), a.offset) < (-b.element.layer, rank(b.element), b.offset)
+            }
+            .map(\.element)
+        let display = CGDisplayBounds(state.displayID)
+        let targets = OverlayLayout.targets(
+            windows: predicted, display: display, appID: { self.bundleID(of: $0) }, isHidden: state.isHidden
+        )
+        let targetsByID = Dictionary(uniqueKeysWithValues: targets.map { ($0.windowID, $0) })
+        let normal = predicted.filter { OverlayLayout.coveredLayers.contains($0.layer) }
+        let local = { (rect: CGRect) in rect.offsetBy(dx: -display.minX, dy: -display.minY) }
+
         var areas: [CoverView.Area] = []
         var prompts: [CoverView.Prompt] = []
         for (index, window) in normal.enumerated().reversed() {
-            guard let tint = tints[window.windowID] else { continue }
-            areas.append(.init(rect: window.bounds.offsetBy(dx: -origin.x, dy: -origin.y), color: tint.color))
-            guard let size = tint.visiblePromptSize else { continue }
-            let rect = CGRect(
-                x: window.bounds.midX - size.width / 2, y: window.bounds.midY - size.height / 2,
-                width: size.width, height: size.height
-            )
-            // Copy only prompts that can be seen now, plus the one on a window about to come forward.
-            let raised = if case .raise(window.windowID) = reason { true } else { false }
-            guard raised || !normal[..<index].contains(where: { $0.bounds.intersects(rect) }) else { continue }
-            prompts.append(.init(appName: tint.appName, rect: rect.offsetBy(dx: -origin.x, dy: -origin.y)))
+            let target = targetsByID[window.windowID]
+            let dismissed = target.map { state.dismissed.contains($0.appID) } ?? false
+            // Windows that aren't tinted are painted clear, so they don't show a stray tint.
+            let color = target == nil ? NSColor.clear : dismissed ? TintColor.dismissed : TintColor.hidden
+            areas.append(.init(rect: local(window.bounds), color: color))
+            guard let target, target.showsPrompt, !dismissed else { continue }
+            prompts.append(.init(
+                appName: tints[target.windowID]?.appName ?? Self.name(of: target.appID),
+                windowRect: local(window.bounds),
+                occluders: normal[..<index].map { local($0.bounds) }
+            ))
         }
-        coverPanel.show(on: screen, areas: areas, prompts: prompts)
-        tints.values.forEach { $0.isTransparent = true }
-        cover = (reason, .now + .seconds(1))
+        coverPanel.update(on: screen, areas: areas, prompts: prompts)
+    }
+
+    /// Sort key for the predicted stacking: lower comes first within a layer.
+    private func risingRank(_ reason: CoverReason, state: State) -> (WindowSnapshot) -> Int {
+        switch reason {
+        case .raise(let id):
+            // Activating the app brings its other windows forward too, behind the raised one.
+            let owner = lastWindows.first { $0.windowID == id }?.ownerPID
+            return { $0.windowID == id ? 0 : $0.ownerPID == owner ? 1 : 2 }
+        case .appSwitch(let since, let target):
+            if lastActivation > since, let pid = lastActivatedPID {
+                return { $0.ownerPID == pid ? 0 : 1 }
+            }
+            if let target {
+                return { $0.ownerPID == target ? 0 : 1 }
+            }
+            // The app being switched to isn't known, so assume any hidden app may come forward.
+            return { self.bundleID(of: $0.ownerPID).map(state.isHidden) ?? false ? 0 : 1 }
+        }
     }
 
     private func endCoverIfSettled(windows: [WindowSnapshot], targets: [OverlayTarget]) {
@@ -210,7 +276,7 @@ final class RevealOverlay {
         case .raise(let id):
             let layer = windows.first { $0.windowID == id }?.layer ?? 0
             settled = windows.first { $0.layer == layer && $0.ownerPID != ownPID }?.windowID == id
-        case .appSwitch(let since):
+        case .appSwitch(let since, _):
             if lastActivation > since, let pid = lastActivatedPID, targets.contains(where: { $0.ownerPID == pid }) {
                 // The app switched to raises its windows only after it's reported active.
                 settled = windows.first { $0.layer == 0 && $0.ownerPID != ownPID }?.ownerPID == pid
@@ -230,8 +296,22 @@ final class RevealOverlay {
     private func endCover() {
         guard cover != nil else { return }
         cover = nil
-        tints.values.forEach { $0.isTransparent = false }
-        coverPanel.hide()
+        Self.atomically {
+            tints.values.forEach { $0.isTransparent = false }
+            coverPanel.hide()
+        }
+    }
+
+    /// Applies window changes together and pushes them to the window server now, rather than
+    /// at the end of the run-loop turn, so no frame shows the cover and the tints both or
+    /// neither.
+    private static func atomically(_ changes: () -> Void) {
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0
+            context.allowsImplicitAnimation = false
+            changes()
+        }
+        CATransaction.flush()
     }
 
     /// Window IDs front to back.
@@ -347,11 +427,18 @@ private final class CoverPanel {
         panel.contentView = view
     }
 
-    func show(on screen: NSScreen, areas: [CoverView.Area], prompts: [CoverView.Prompt]) {
+    func update(on screen: NSScreen, areas: [CoverView.Area], prompts: [CoverView.Prompt]) {
         if panel.frame != screen.frame { panel.setFrame(screen.frame, display: false) }
         view.show(areas: areas, prompts: prompts)
-        // Drawn before it appears, so it never shows stale or empty.
+    }
+
+    /// Draws and sends the content now, so the panel never appears with last time's content.
+    func commitContent() {
         panel.displayIfNeeded()
+        CATransaction.flush()
+    }
+
+    func orderFront() {
         panel.orderFrontRegardless()
     }
 
@@ -368,35 +455,93 @@ private final class CoverView: NSView {
 
     struct Prompt {
         var appName: String
-        var rect: CGRect
+        /// The window the prompt is centred on, like the real one.
+        var windowRect: CGRect
+        /// Windows in front of it, which hide those parts of the prompt.
+        var occluders: [CGRect]
     }
 
     /// Back to front.
     private var areas: [Area] = []
-    private var promptViews: [AppButtons] = []
+    /// Reused between covers: building them inside the event tap delays the event, and new ones
+    /// can take a frame to render.
+    private var promptPool: [PromptCopy] = []
 
     // Matches the window server's top-left coordinates.
     override var isFlipped: Bool { true }
 
     func show(areas: [Area], prompts: [Prompt]) {
         self.areas = areas
-        promptViews.forEach { $0.removeFromSuperview() }
-        promptViews = prompts.map { prompt in
-            let view = AppButtons(appName: prompt.appName, reveal: {}, dismiss: {})
-            view.frame = prompt.rect
-            addSubview(view)
-            return view
+        while promptPool.count < prompts.count {
+            let copy = PromptCopy()
+            addSubview(copy)
+            promptPool.append(copy)
         }
+        for (copy, prompt) in zip(promptPool, prompts) {
+            copy.appName = prompt.appName
+            let size = copy.promptSize
+            let centred = CGRect(
+                x: prompt.windowRect.midX - size.width / 2, y: prompt.windowRect.midY - size.height / 2,
+                width: size.width, height: size.height
+            )
+            // Pixel-aligned, as Auto Layout aligns the real prompt.
+            let frame = backingAlignedRect(centred, options: .alignAllEdgesNearest)
+            copy.show(frame: frame, visible: RectMath.subtract(prompt.occluders, from: frame))
+        }
+        promptPool.dropFirst(prompts.count).forEach { $0.isHidden = true }
         needsDisplay = true
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        NSColor.clear.setFill()
+        bounds.fill(using: .copy)
         // Overwrite rather than blend, so where windows overlap the front one's tint shows once
         // instead of the tints stacking into a darker grey.
         for area in areas {
             area.color.setFill()
             area.rect.fill(using: .copy)
         }
+    }
+}
+
+/// A non-interactive copy of a prompt, masked to the parts windows in front don't hide.
+private final class PromptCopy: NSView {
+    private let buttons = AppButtons(appName: "", reveal: {}, dismiss: {})
+    private let mask = CAShapeLayer()
+
+    init() {
+        super.init(frame: .zero)
+        wantsLayer = true
+        buttons.autoresizingMask = [.width, .height]
+        addSubview(buttons)
+        layer?.mask = mask
+    }
+
+    required init?(coder: NSCoder) { fatalError("unused") }
+
+    var appName: String {
+        get { buttons.appName }
+        set { buttons.appName = newValue }
+    }
+
+    var promptSize: CGSize { buttons.fittingSize }
+
+    /// `frame` and `visible` are in the parent's flipped (top-left) coordinates.
+    func show(frame: CGRect, visible: [CGRect]) {
+        isHidden = visible.isEmpty
+        guard !visible.isEmpty else { return }
+        self.frame = frame
+        buttons.frame = bounds
+        // This view isn't flipped: its layer's origin is bottom-left.
+        let path = CGMutablePath()
+        for piece in visible {
+            path.addRect(CGRect(
+                x: piece.minX - frame.minX, y: frame.maxY - piece.maxY,
+                width: piece.width, height: piece.height
+            ))
+        }
+        mask.frame = bounds
+        mask.path = path
     }
 }
 
@@ -413,6 +558,12 @@ private final class ClickView: NSView {
 
 /// App name with Reveal and Dismiss buttons, centred on a hidden app's frontmost window.
 private final class AppButtons: NSVisualEffectView {
+    private let label = NSTextField(labelWithString: "")
+
+    var appName = "" {
+        didSet { updateLabel() }
+    }
+
     init(appName: String, reveal: @escaping () -> Void, dismiss: @escaping () -> Void) {
         super.init(frame: .zero)
         material = .hudWindow
@@ -420,7 +571,8 @@ private final class AppButtons: NSVisualEffectView {
         wantsLayer = true
         layer?.cornerRadius = 14
 
-        let label = NSTextField(labelWithString: "\(appName) is hidden from viewers")
+        self.appName = appName
+        updateLabel()  // didSet doesn't run for assignments in init
         label.font = .systemFont(ofSize: 13, weight: .medium)
         let revealButton = FirstClickButton(title: "Reveal", action: reveal)
         revealButton.keyEquivalent = "\r"
@@ -443,6 +595,10 @@ private final class AppButtons: NSVisualEffectView {
     }
 
     required init?(coder: NSCoder) { fatalError("unused") }
+
+    private func updateLabel() {
+        label.stringValue = "\(appName) is hidden from viewers"
+    }
 }
 
 /// The overlay never becomes key, so its buttons must act on the first click.
