@@ -22,6 +22,7 @@ final class TeamsShareWatcher {
         timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.check() }
         }
+        timer?.tolerance = 0.1
     }
 
     func stop() {
@@ -32,14 +33,15 @@ final class TeamsShareWatcher {
     }
 
     private func check() {
-        // Asking by bundle ID avoids fetching every running app's bundle ID twice a second.
-        let teams = Set(Self.teamsBundleIDs
-            .flatMap(NSRunningApplication.runningApplications(withBundleIdentifier:))
-            .map(\.processIdentifier))
-        let sharing = if let bounds = displayBounds(), !teams.isEmpty {
-            ShareDetection.isSharing(display: bounds, windows: WindowList.onScreen(), sharerPIDs: teams)
+        let sharing: Bool
+        if let bounds = displayBounds() {
+            // Asking by bundle ID avoids fetching every running app's bundle ID twice a second.
+            let teams = Set(Self.teamsBundleIDs
+                .flatMap(NSRunningApplication.runningApplications(withBundleIdentifier:))
+                .map(\.processIdentifier))
+            sharing = !teams.isEmpty && ShareDetection.isSharing(display: bounds, windows: WindowList.onScreen(maxAge: .milliseconds(100)), sharerPIDs: teams)
         } else {
-            false
+            sharing = false
         }
         if sharing != isSharing {
             isSharing = sharing

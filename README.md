@@ -44,8 +44,8 @@ Other targets: `make test`, `make run` (run from `build/` without installing), `
 - **Excluded Apps**: toggle entries; *Add Running App* excludes anything else. Replaced by
   **Revealed Apps**, which toggles which running apps viewers can see, while Show Only Revealed
   Apps is on.
-- **Frame Rate**: 5, 15, 30 (default) or 60 fps. Lower saves battery; Teams rarely sends
-  more than 30.
+- **Frame Rate**: 5, 15 (default), 30 or 60 fps. Lower saves battery: the capture and
+  redrawing cost scales with it. Raise it for smoother motion; Teams rarely sends more than 30.
 - **Show Preview**: floating window showing exactly what viewers see.
 - **Launch at Login** (works best when installed in `~/Applications`).
 

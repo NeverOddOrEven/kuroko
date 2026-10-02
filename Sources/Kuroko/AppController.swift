@@ -39,6 +39,7 @@ final class AppController {
     private var powerTask: Task<Void, Never>?
     private var filterTask: Task<Void, Never>?
     private var isFilterRefreshQueued = false
+    private var isFullRefreshQueued = false
 
     /// Set while the running filter may still show an app the user has since excluded. Fails
     /// closed: the stage stays black, rather than frozen on a frame that could show the app.
@@ -130,8 +131,13 @@ final class AppController {
         })
         // Backstop for windows from processes that never post a launch notification.
         filterTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.refreshFilter() }
+            MainActor.assumeIsolated {
+                // Nothing reaches viewers while paused or stopped; a launch or quit still refreshes.
+                guard self?.state == .live else { return }
+                self?.refreshFilter(onlyIfChanged: true)
+            }
         }
+        filterTimer?.tolerance = 1
 
         if !Permissions.hasScreenRecording {
             Permissions.requestScreenRecording()
@@ -239,6 +245,8 @@ final class AppController {
                 log.info("Turning the Kuroko display off")
                 state = .off
                 await capture.stop()
+                present(.blank)  // lets go of the last frame
+                cursorGuard?.stop()
                 stage.close()
                 preview.hide()
                 watermark.hide()
@@ -310,6 +318,7 @@ final class AppController {
             virtualDisplay.park(physicalDisplayBounds: physicalDisplayIDs.map(CGDisplayBounds))
             sourceDisplayID = source
             sourceSpec = spec
+            cursorGuard?.start()
             showStage()
             try await capture.start(sourceDisplayID: source, spec: spec, frameRate: prefs.frameRate, policy: policy)
             state = .live
@@ -525,17 +534,21 @@ final class AppController {
 
     /// Refreshes run one at a time, and each reads the exclusion list only once it starts, so
     /// an older list can never be applied over a newer one.
-    private func refreshFilter() {
+    /// `onlyIfChanged` lets the capture skip the full request when the listed apps look the same.
+    private func refreshFilter(onlyIfChanged: Bool = false) {
         // A queued pass hasn't read the list yet, so it covers this request too.
+        if !onlyIfChanged { isFullRefreshQueued = true }
         guard !isFilterRefreshQueued else { return }
         isFilterRefreshQueued = true
         let previous = filterTask
         filterTask = Task {
             await previous?.value
             isFilterRefreshQueued = false
+            let full = isFullRefreshQueued
+            isFullRefreshQueued = false
             guard capture.isRunning else { return }
             do {
-                try await capture.refreshFilter(policy: policy)
+                try await capture.refreshFilter(policy: policy, onlyIfChanged: !full)
             } catch {
                 log.error("Filter refresh failed: \(error.localizedDescription, privacy: .public)")
             }

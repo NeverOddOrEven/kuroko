@@ -17,6 +17,8 @@ final class FrameView: NSView {
         wantsLayer = true
         frameLayer.contentsGravity = .resizeAspect
         frameLayer.backgroundColor = NSColor.black.cgColor
+        // Letterboxed on black, so it's copied rather than blended.
+        frameLayer.isOpaque = true
         layer = frameLayer
     }
 

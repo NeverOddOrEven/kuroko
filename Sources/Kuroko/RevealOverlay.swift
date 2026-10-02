@@ -32,7 +32,6 @@ final class RevealOverlay {
     /// Polled at full rate for a while after windows change, and at a third of it when idle.
     private var lastWindows: [WindowSnapshot] = []
     private var lastChange = ContinuousClock.now
-    private var ticks = 0
     private var activationObserver: NSObjectProtocol?
     private var lastActivation = ContinuousClock.now
     private var lastActivatedPID: pid_t?
@@ -49,6 +48,7 @@ final class RevealOverlay {
         let timer = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
         }
+        timer.tolerance = 0.005
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
         activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
@@ -132,7 +132,7 @@ final class RevealOverlay {
             refreshCover(windows: windows, state: state, screen: screen)
             coverPanel.commitContent()
         }
-        endCoverIfSettled(windows: windows, targets: targets)
+        endCoverIfSettled(windows: windows, targets: targets, reordered: reordered)
     }
 
     private func makeTint(for target: OverlayTarget) -> WindowTint {
@@ -152,10 +152,10 @@ final class RevealOverlay {
     }
 
     private func tick() {
-        ticks += 1
-        let idle = ContinuousClock.now - lastChange > .seconds(1) && cover == nil
-        guard !idle || ticks % 3 == 0 else { return }
         update()
+        // Rescheduled rather than skipping ticks, which would still wake the process.
+        let idle = ContinuousClock.now - lastChange > .seconds(1) && cover == nil
+        timer?.fireDate = Date(timeIntervalSinceNow: idle ? 0.1 : 1.0 / 30)
     }
 
     private func bundleID(of pid: pid_t) -> String? {
@@ -169,9 +169,10 @@ final class RevealOverlay {
     /// (its tint lets clicks through) that isn't in front, or an app in the Dock.
     private func coverBeforeClick(at point: CGPoint) {
         let ownPID = ProcessInfo.processInfo.processIdentifier
-        let windows = WindowList.onScreen().filter { $0.ownerPID != ownPID }
+        let all = WindowList.onScreen()
+        let windows = all.filter { $0.ownerPID != ownPID }
         guard let clicked = windows.first(where: { $0.bounds.contains(point) }) else { return }
-        if NSRunningApplication(processIdentifier: clicked.ownerPID)?.bundleIdentifier == "com.apple.dock" {
+        if bundleID(of: clicked.ownerPID) == "com.apple.dock" {
             // A Dock icon that isn't a running app launches one, whose windows are new and
             // get tints as they appear; there's nothing on screen to cover.
             if let app = AppSwitcher.dockApp(at: point) { coverForAppSwitch(to: app) }
@@ -179,7 +180,7 @@ final class RevealOverlay {
         }
         let front = windows.first { $0.layer == clicked.layer }
         guard let tint = tints[clicked.windowID], tint.isDismissed, front?.windowID != clicked.windowID else { return }
-        beginCover(.raise(clicked.windowID))
+        beginCover(.raise(clicked.windowID), windows: all)
     }
 
     // MARK: - Cover
@@ -199,10 +200,10 @@ final class RevealOverlay {
     /// tints, which go transparent until each is back on top of its window. The panel paints
     /// the tints as they will look once the windows have moved, so taking it down changes
     /// nothing on screen.
-    private func beginCover(_ reason: CoverReason) {
+    private func beginCover(_ reason: CoverReason, windows: [WindowSnapshot]? = nil) {
         guard let state = state(), let screen = Displays.screen(for: state.displayID), !tints.isEmpty else { return }
         cover = (reason, .now + .seconds(1))
-        refreshCover(windows: WindowList.onScreen(), state: state, screen: screen)
+        refreshCover(windows: windows ?? WindowList.onScreen(), state: state, screen: screen)
         coverPanel.commitContent()
         // Called from the event tap, so this must reach the screen before the event is released.
         Self.atomically {
@@ -267,7 +268,7 @@ final class RevealOverlay {
         }
     }
 
-    private func endCoverIfSettled(windows: [WindowSnapshot], targets: [OverlayTarget]) {
+    private func endCoverIfSettled(windows: [WindowSnapshot], targets: [OverlayTarget], reordered: Bool) {
         guard let cover else { return }
         let ownPID = ProcessInfo.processInfo.processIdentifier
         let timedOut = ContinuousClock.now >= cover.deadline
@@ -285,7 +286,8 @@ final class RevealOverlay {
             }
         }
         guard settled || timedOut else { return }
-        let stacking = Self.currentStacking()
+        // Only a reorder since `windows` was listed can have changed the stacking.
+        let stacking = reordered ? Self.currentStacking() : windows.map(\.windowID)
         let inPlace = targets.allSatisfy { target in
             tints[target.windowID].map { Self.isDirectlyAbove($0.windowID, target.windowID, in: stacking) } ?? true
         }
@@ -343,12 +345,16 @@ private final class WindowTint {
     private(set) var target: OverlayTarget?
     private let panel: NonKeyPanel
     private let prompt: AppButtons
+    private let content = ClickView()
+    private(set) var color = TintColor.hidden
 
     init(appName: String, reveal: @escaping () -> Void, dismiss: @escaping () -> Void) {
         self.appName = appName
         panel = NonKeyPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.isOpaque = false
-        panel.backgroundColor = TintColor.hidden
+        // The tint is the content layer's colour: a window background would be drawn into a
+        // window-sized bitmap, and redrawn on every resize.
+        panel.backgroundColor = .clear
         panel.hasShadow = false
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
@@ -357,7 +363,8 @@ private final class WindowTint {
 
         prompt = AppButtons(appName: appName, reveal: reveal, dismiss: dismiss)
         prompt.translatesAutoresizingMaskIntoConstraints = false
-        let content = ClickView()
+        content.wantsLayer = true
+        content.layer?.backgroundColor = color.cgColor
         content.addSubview(prompt)
         NSLayoutConstraint.activate([
             prompt.centerXAnchor.constraint(equalTo: content.centerXAnchor),
@@ -369,7 +376,6 @@ private final class WindowTint {
 
     var windowID: CGWindowID { CGWindowID(panel.windowNumber) }
     var isDismissed: Bool { panel.ignoresMouseEvents }
-    var color: NSColor { panel.backgroundColor }
     var visiblePromptSize: CGSize? { prompt.isHidden ? nil : prompt.fittingSize }
 
     var isTransparent: Bool {
@@ -380,12 +386,15 @@ private final class WindowTint {
     func update(target: OverlayTarget, dismissed: Bool) {
         self.target = target
         let frame = Self.cocoaFrame(for: target.bounds)
-        if panel.frame != frame { panel.setFrame(frame, display: true) }
+        if panel.frame != frame { panel.setFrame(frame, display: false) }
         // Only on change: setting a window's level can reorder it.
         let level = NSWindow.Level(rawValue: target.layer)
         if panel.level != level { panel.level = level }
         let color = dismissed ? TintColor.dismissed : TintColor.hidden
-        if panel.backgroundColor != color { panel.backgroundColor = color }
+        if self.color != color {
+            self.color = color
+            content.layer?.backgroundColor = color.cgColor
+        }
         // Undismissed tints block input to their window; dismissed ones let it through.
         if panel.ignoresMouseEvents != dismissed { panel.ignoresMouseEvents = dismissed }
         prompt.isHidden = dismissed || !target.showsPrompt
@@ -448,12 +457,12 @@ private final class CoverPanel {
 }
 
 private final class CoverView: NSView {
-    struct Area {
+    struct Area: Equatable {
         var rect: CGRect
         var color: NSColor
     }
 
-    struct Prompt {
+    struct Prompt: Equatable {
         var appName: String
         /// The window the prompt is centred on, like the real one.
         var windowRect: CGRect
@@ -470,8 +479,13 @@ private final class CoverView: NSView {
     // Matches the window server's top-left coordinates.
     override var isFlipped: Bool { true }
 
+    private var prompts: [Prompt] = []
+
     func show(areas: [Area], prompts: [Prompt]) {
+        // Refreshed every tick while up; most ticks change nothing.
+        guard areas != self.areas || prompts != self.prompts else { return }
         self.areas = areas
+        self.prompts = prompts
         while promptPool.count < prompts.count {
             let copy = PromptCopy()
             addSubview(copy)

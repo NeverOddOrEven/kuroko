@@ -26,8 +26,8 @@ enum TeamsShareLauncher {
             return .teamsNotRunning
         }
         let app = AXUIElementCreateApplication(teams.processIdentifier)
-        // Teams' web content builds its accessibility tree only once a client asks for it.
-        AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+        setAccessibilityTree(app, enabled: true)
+        defer { setAccessibilityTree(app, enabled: false) }
 
         if let tile = screenTile(named: name, in: app) {
             return press(tile)
@@ -53,10 +53,19 @@ enum TeamsShareLauncher {
             return .teamsNotRunning
         }
         let app = AXUIElementCreateApplication(teams.processIdentifier)
+        setAccessibilityTree(app, enabled: true)
+        defer { setAccessibilityTree(app, enabled: false) }
         guard let shareButton = first(in: app, where: { string($0, "AXDOMIdentifier") == shareButtonID }) else {
             return .noMeeting
         }
         return AXUIElementPerformAction(shareButton, kAXPressAction as CFString) == .success ? .stopped : .noMeeting
+    }
+
+    /// Teams' web content builds its accessibility tree only once a client asks for it, and then
+    /// keeps it up to date on every change for as long as it's on, at a cost to Teams' CPU. So
+    /// it's on only while Kuroko is looking.
+    private static func setAccessibilityTree(_ app: AXUIElement, enabled: Bool) {
+        AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, enabled ? kCFBooleanTrue : kCFBooleanFalse)
     }
 
     private static func press(_ element: AXUIElement) -> Outcome {

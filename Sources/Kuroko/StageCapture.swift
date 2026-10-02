@@ -1,3 +1,4 @@
+import AppKit
 import CoreImage
 import CoreMedia
 import KurokoCore
@@ -35,6 +36,8 @@ final class StageCapture: NSObject {
     }
 
     private var session: Session?
+    /// Creating a context sets up Metal state, which stalls the main thread; make one only once.
+    private static let ciContext = CIContext()
     private let sampleQueue = DispatchQueue(label: "com.neveroddoreven.kuroko.frames", qos: .userInteractive)
     private var lastSurface: IOSurfaceRef?
     /// Bumped by every start and stop, so a start that was overtaken while suspended can tell.
@@ -80,8 +83,14 @@ final class StageCapture: NSObject {
     }
 
     /// Re-snapshots running apps and swaps the filter if the mode or the listed apps changed.
-    func refreshFilter(policy: ExclusionPolicy) async throws {
+    /// With `onlyIfChanged`, first checks cheaply whether the listed apps have changed, and skips
+    /// the full shareable-content request (every window on every Space) when they haven't.
+    func refreshFilter(policy: ExclusionPolicy, onlyIfChanged: Bool = false) async throws {
         guard let session else { return }
+        if onlyIfChanged, policy.mode == session.filterMode, Self.expectedPIDs(for: policy) == session.filterPIDs {
+            self.session?.policy = policy
+            return
+        }
         do {
             let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
             guard let display = content.displays.first(where: { $0.displayID == session.displayID }) else { return }
@@ -100,6 +109,18 @@ final class StageCapture: NSObject {
         } catch where self.session?.stream !== session.stream {
             // The stream was replaced or stopped meanwhile; its successor builds its own filter.
         }
+    }
+
+    /// The processes a filter built for `policy` would list, from LaunchServices. It can miss
+    /// processes the capture service lists, which only costs a full refresh.
+    private static func expectedPIDs(for policy: ExclusionPolicy) -> Set<pid_t> {
+        let bundleIDs = switch policy.mode {
+        case .hideExcluded: policy.excludedBundleIDs
+        case .showRevealed: policy.revealedBundleIDs.union(ExclusionPolicy.desktopBundleIDs)
+        }
+        let pids = Set(bundleIDs.flatMap(NSRunningApplication.runningApplications(withBundleIdentifier:)).map(\.processIdentifier))
+        // Kuroko is always excluded: listed when excluding, never when including.
+        return policy.mode == .hideExcluded ? pids.union([policy.selfProcessID]) : pids.subtracting([policy.selfProcessID])
     }
 
     func excludes(_ pid: pid_t) -> Bool {
@@ -137,6 +158,7 @@ final class StageCapture: NSObject {
 
     func stop() async {
         generation += 1
+        lastSurface = nil
         guard let session else { return }
         self.session = nil
         try? await session.stream.stopCapture()
@@ -146,7 +168,7 @@ final class StageCapture: NSObject {
     func snapshotLastFrame() -> CGImage? {
         guard let lastSurface else { return nil }
         let image = CIImage(ioSurface: lastSurface)
-        return CIContext().createCGImage(image, from: image.extent)
+        return Self.ciContext.createCGImage(image, from: image.extent)
     }
 
     /// `listed` is the apps the filter names: excluded ones in `.hideExcluded` mode, included
@@ -189,7 +211,8 @@ final class StageCapture: NSObject {
         config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(frameRate))
         config.showsCursor = true
         config.pixelFormat = kCVPixelFormatType_32BGRA
-        config.queueDepth = 5
+        // Frames are consumed as soon as they arrive, so the minimum is enough.
+        config.queueDepth = 3
         if let name = CGDisplayCopyColorSpace(displayID).name {
             config.colorSpaceName = name
         }

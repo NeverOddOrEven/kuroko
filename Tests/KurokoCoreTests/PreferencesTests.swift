@@ -33,9 +33,9 @@ final class PreferencesTests {
         #expect(prefs.showPreview)
     }
 
-    @Test func frameRateDefaultsTo30() {
+    @Test func frameRateDefaultsTo15() {
         let prefs = Preferences(defaults: defaults)
-        #expect(prefs.frameRate == 30)
+        #expect(prefs.frameRate == 15)
     }
 
     @Test func frameRateRoundTripsSupportedValues() {

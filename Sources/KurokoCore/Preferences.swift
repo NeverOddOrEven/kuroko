@@ -11,7 +11,7 @@ public final class Preferences: @unchecked Sendable {
     }
 
     public static let frameRateOptions = [5, 15, 30, 60]
-    public static let defaultFrameRate = 30
+    public static let defaultFrameRate = 15
 
     private let defaults: UserDefaults
 
